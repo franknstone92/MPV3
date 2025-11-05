@@ -1,0 +1,9 @@
+Implementation;Threads;Time
+Simple;1;2.767067
+Reduced;1;2.1654089
+Simple;2;1.6318356
+Reduced;2;1.8390881
+Simple;4;1.4248929
+Reduced;4;1.4246217
+Simple;8;1.8189862
+Reduced;8;1.9892831

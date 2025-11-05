@@ -3,11 +3,22 @@
 #include <fstream>
 #include <format>
 #include <chrono>
+#include <omp.h>
+#include <vector>
+#include <cmath>
 
 struct Vector {
     double x;
     double y;
     double z;
+
+    Vector operator+(const Vector& other) const {
+        return Vector{
+            x + other.x,
+            y + other.y,
+            z + other.z
+        };
+    }
 };
 
 struct Particle {
@@ -25,8 +36,8 @@ const int THREADS_8 = 8;
 const int THREADS_16 = 16;
 const int THREADS_32 = 32;
 
-int n_steps = 10000;
-int n_particles = 200;
+int n_steps = 100000;
+int n_particles = 100;
 int delta_t = 1e4;  // hours
 
 void generate_initial_state(Particle* particles) {
@@ -35,14 +46,14 @@ void generate_initial_state(Particle* particles) {
     std::lognormal_distribution<double> mass_distibution{ std::log(1e25), 0.8 };
     std::uniform_real_distribution<double> position_distribution{ -1e11, +1e11 };
     std::normal_distribution<double> velocity_distribution{ 0.0, 1e2 };
-    
+
     for (int q = 0; q < n_particles; q++) {
         particles[q].m = mass_distibution(generator);
-        
+
         particles[q].s.x = position_distribution(generator);
         particles[q].s.y = position_distribution(generator);
         particles[q].s.z = position_distribution(generator);
-        
+
         particles[q].v.x = position_distribution(generator);
         particles[q].v.y = position_distribution(generator);
         particles[q].v.z = position_distribution(generator);
@@ -50,7 +61,7 @@ void generate_initial_state(Particle* particles) {
 }
 
 // simple calculation
-void calculate_forces_simple(int q,  Particle* particles, Vector* forces) {
+void calculate_forces_simple(int q, Particle* particles, Vector* forces) {
     forces[q].x = forces[q].y = forces[q].z = 0;
 
     for (int k = 0; k < n_particles; k++) {
@@ -77,28 +88,52 @@ void calculate_forces_simple(int q,  Particle* particles, Vector* forces) {
 }
 
 // reduced calculation using newton's third law
-void calculate_forces_reduced(int q, Particle* particles, Vector* forces) {
+void calculate_forces_reduced(Particle* particles, Vector* forces, int num_threads) {
+#pragma omp parallel num_threads(num_threads)
+    {
+		// create thread-local buffer
+        std::vector<Vector> local_forces(n_particles);
+        local_forces.assign(n_particles, Vector{ 0.0, 0.0, 0.0 });
 
-    // compute pairwise forces only once
-    for (int k = q + 1; k < n_particles; k++) {
-        double dx = particles[q].s.x - particles[k].s.x;
-        double dy = particles[q].s.y - particles[k].s.y;
-        double dz = particles[q].s.z - particles[k].s.z;
+//------------------------------------------------------------------------------------------------------------------------------
+#pragma omp for //schedule(static, 15)
+        for (int q = 0; q < n_particles; q++) {
+            for (int k = q + 1; k < n_particles; k++) {
+                double dx = particles[q].s.x - particles[k].s.x;
+                double dy = particles[q].s.y - particles[k].s.y;
+                double dz = particles[q].s.z - particles[k].s.z;
 
-        double r2 = dx * dx + dy * dy + dz * dz;
-        double r1 = std::sqrt(r2);
-        double r3 = r2 * r1;
+                double r2 = dx * dx + dy * dy + dz * dz;
+                if (r2 == 0.0) continue; 
+                double r1 = std::sqrt(r2);
+                double r3 = r2 * r1;
+                double invr3 = 1.0 / r3;
 
-        double mass_force = particles[k].m / r3;
+                double fdx = dx * invr3;
+                double fdy = dy * invr3;
+                double fdz = dz * invr3;
 
-        
-        forces[q].x += mass_force * dx;
-        forces[q].y += mass_force * dy;
-        forces[q].z += mass_force * dz;
+                // acceleration contribution for q: -G * m_k * (r_q - r_k)/r^3
+                local_forces[q].x += -G * particles[k].m * fdx;
+                local_forces[q].y += -G * particles[k].m * fdy;
+                local_forces[q].z += -G * particles[k].m * fdz;
 
-        forces[k].x -= mass_force * dx;
-        forces[k].y -= mass_force * dy;
-        forces[k].z -= mass_force * dz;
+                // acceleration contribution for k: G * m_q * (r_q - r_k)/r^3
+                local_forces[k].x += G * particles[q].m * fdx;
+                local_forces[k].y += G * particles[q].m * fdy;
+                local_forces[k].z += G * particles[q].m * fdz;
+            }
+        }
+
+        // merge thread-local accumulators into the global forces
+#pragma omp critical
+        {
+            for (int i = 0; i < n_particles; i++) {
+                forces[i].x += local_forces[i].x;
+                forces[i].y += local_forces[i].y;
+                forces[i].z += local_forces[i].z;
+            }
+        }
     }
 }
 
@@ -139,7 +174,9 @@ void simple_calculation(int num_threads) {
         double current_time = step * delta_t;
 
         // calculate forces simple
-        #pragma omp parallel for num_threads(num_threads) //schedule(static, 10)
+
+//------------------------------------------------------------------------------------------------------------------------------
+#pragma omp parallel for num_threads(num_threads) //schedule(static, 15)
         for (int q = 0; q < n_particles; q++)
             calculate_forces_simple(q, particles, forces);
 
@@ -154,6 +191,8 @@ void simple_calculation(int num_threads) {
             write_state(out_file, step, current_time, particles);
         }
     }
+
+    out_file.close();
 
     delete[] particles;
 }
@@ -176,10 +215,7 @@ void reduced_calculation(int num_threads) {
             forces[i].x = forces[i].y = forces[i].z = 0;
         }
 
-        // calculate forces reduced
-        #pragma omp parallel for num_threads(num_threads) reduction(+:forces[:n_particles]) schedule(dynamic, 10)
-        for (int q = 0; q < n_particles; q++)
-            calculate_forces_reduced(q, particles, forces);
+		calculate_forces_reduced(particles, forces, num_threads);
 
         // position updates
         for (int q = 0; q < n_particles; q++) {
@@ -193,18 +229,21 @@ void reduced_calculation(int num_threads) {
         }
     }
 
+    out_file.close();
+
     delete[] particles;
 }
 
 
 int main()
 {
+
     // Serial calculation
     auto start = std::chrono::high_resolution_clock::now();
     simple_calculation(THREADS_1);
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed_simple = end - start;
-    
+
     start = std::chrono::high_resolution_clock::now();
     reduced_calculation(THREADS_1);
     end = std::chrono::high_resolution_clock::now();
@@ -212,21 +251,67 @@ int main()
 
     // Parallel calculation
     start = std::chrono::high_resolution_clock::now();
+    simple_calculation(THREADS_2);
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_simple_2 = end - start;
+
+    start = std::chrono::high_resolution_clock::now();
+    reduced_calculation(THREADS_2);
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_reduced_2 = end - start;
+
+    // Parallel calculation
+    start = std::chrono::high_resolution_clock::now();
+    simple_calculation(THREADS_4);
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_simple_4 = end - start;
+
+    start = std::chrono::high_resolution_clock::now();
+    reduced_calculation(THREADS_4);
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_reduced_4 = end - start;
+
+    // Parallel calculation
+    start = std::chrono::high_resolution_clock::now();
     simple_calculation(THREADS_8);
     end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed_simple_8_threads = end - start;
+    std::chrono::duration<double> elapsed_simple_8 = end - start;
 
     start = std::chrono::high_resolution_clock::now();
     reduced_calculation(THREADS_8);
     end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed_reduced_8_threads = end - start;
+    std::chrono::duration<double> elapsed_reduced_8 = end - start;
 
     std::cout << "Execution times for SERIAL " << n_particles << "-body calculation: " << std::endl;
     std::cout << " Simple calculation : " << elapsed_simple.count() << " seconds" << std::endl;
     std::cout << " Reduced calculation: " << elapsed_reduced.count() << " seconds" << std::endl;
 
     std::cout << "Execution times for PARALLEL " << n_particles << "-body calculation: " << std::endl;
-    std::cout << " Simple calculation with  8 Threads: " << elapsed_simple_8_threads.count() << " seconds" << std::endl;
-    std::cout << " Reduced calculation with 8 Threads: " << elapsed_reduced_8_threads.count() << " seconds" << std::endl;
+    std::cout << " Simple calculation with  2 Threads: " << elapsed_simple_2.count() << " seconds" << std::endl;
+    std::cout << " Reduced calculation with 2 Threads: " << elapsed_reduced_2.count() << " seconds" << std::endl;
+
+    std::cout << "Execution times for PARALLEL " << n_particles << "-body calculation: " << std::endl;
+    std::cout << " Simple calculation with  4 Threads: " << elapsed_simple_4.count() << " seconds" << std::endl;
+    std::cout << " Reduced calculation with 4 Threads: " << elapsed_reduced_4.count() << " seconds" << std::endl;
+
+    std::cout << "Execution times for PARALLEL " << n_particles << "-body calculation: " << std::endl;
+    std::cout << " Simple calculation with  8 Threads: " << elapsed_simple_8.count() << " seconds" << std::endl;
+    std::cout << " Reduced calculation with 8 Threads: " << elapsed_reduced_8.count() << " seconds" << std::endl;
+
+
+    std::fstream out_file{ "n_body_auto.csv", std::ios::out };
+	out_file << "Implementation;Threads;Time\n";
+    out_file << std::format("Simple;1;{}\n", elapsed_simple.count());
+    out_file << std::format("Reduced;1;{}\n", elapsed_reduced.count());
+    out_file << std::format("Simple;2;{}\n", elapsed_simple_2.count());
+    out_file << std::format("Reduced;2;{}\n", elapsed_reduced_2.count());
+    out_file << std::format("Simple;4;{}\n", elapsed_simple_4.count());
+    out_file << std::format("Reduced;4;{}\n", elapsed_reduced_4.count());
+    out_file << std::format("Simple;8;{}\n", elapsed_simple_8.count());
+    out_file << std::format("Reduced;8;{}\n", elapsed_reduced_8.count());
+    out_file.close();
+	return 0;
+
+
 
 }
