@@ -1,0 +1,30 @@
+# Ignore build folders
+build/
+Build/
+dist/
+out/
+bin/
+obj/
+x64/
+x86/
+Release/
+Debug/
+
+# Ignore IDE and OS files
+.vscode/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+.vs/
+
+# Ignore dependency folders
+node_modules/
+venv/
+.env
+
+# Ignore compiled files
+*.exe
+*.dll
+*.class
+*.pyc
