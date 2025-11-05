@@ -7,11 +7,12 @@
 #include <cmath>
 #include <chrono>
 #include <omp.h>
+#include <fstream>
 
-constexpr size_t n_samples = 100000;
+constexpr size_t n_samples = 1000000;
 constexpr size_t n_dimensions = 3;
 constexpr size_t n_centroids = 10;
-constexpr size_t max_iterations = 100;
+constexpr size_t max_iterations = 10000;
 const std::pair<float, float> space = { 0.0f, 100.0f };
 
  
@@ -95,7 +96,7 @@ Centroids update_centroids(const Samples& samples, Centroids& centroids, const C
     return new_centroids;
 }
 
-void calculate_cluster(Samples& samples, Centroids& centroids, CentroidAssignment& centroid_assignment, int num_threads) {
+int calculate_cluster(Samples& samples, Centroids& centroids, CentroidAssignment& centroid_assignment, int num_threads) {
 	std::cout << "Calculating Clusters using " << num_threads << " Threads." << std::endl;
     for (size_t i = 0; i <= max_iterations; ++i) {
         std::cout << "Start Iteration " << i << std::endl;
@@ -104,7 +105,7 @@ void calculate_cluster(Samples& samples, Centroids& centroids, CentroidAssignmen
 
         if (new_centroids == centroids) {
             std::cout << "Converged after " << i << " iterations." << std::endl;
-            break;
+            return i;
         }
 
     }
@@ -142,11 +143,11 @@ int main()
     CentroidAssignment centroid_assignment_parallel_8 = centroid_assignment;
 
     auto start = std::chrono::high_resolution_clock::now();
-    calculate_cluster(samples_serial, centroids_serial, centroid_assignment_serial, 1);
+    int iterations_1 = calculate_cluster(samples_serial, centroids_serial, centroid_assignment_serial, 1);
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed_simple = end - start;
     start = std::chrono::high_resolution_clock::now();
-	calculate_cluster(samples_parallel_2, centroids_parallel_2, centroid_assignment_parallel_2, 2);
+    calculate_cluster(samples_parallel_2, centroids_parallel_2, centroid_assignment_parallel_2, 2);
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed_parallel_2 = end - start;
     start = std::chrono::high_resolution_clock::now();
@@ -162,6 +163,15 @@ int main()
 	std::cout << "Elapsed time parallel (2 threads): " << elapsed_parallel_2.count() << " seconds.\n";
 	std::cout << "Elapsed time parallel (4 threads): " << elapsed_parallel_4.count() << " seconds.\n";
 	std::cout << "Elapsed time parallel (8 threads): " << elapsed_parallel_8.count() << " seconds.\n";
+
+    std::ofstream out_file("task2_execution_results", std::ios::app);
+	out_file << "Samples;Dimensions;Centroids;Max_Iterations;Iterations;1Thread;2Threads;4Threads;8Threads\n";
+    out_file << n_samples << ";" << n_dimensions << ";" << n_centroids << ";" << max_iterations << ";"
+             << iterations_1 << ";"
+             << elapsed_simple.count() << ";"
+             << elapsed_parallel_2.count() << ";"
+             << elapsed_parallel_4.count() << ";"
+		     << elapsed_parallel_8.count() << "\n";
 
     return 0;
 }

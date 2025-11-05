@@ -1,0 +1,2 @@
+Samples;Dimensions;Centroids;Max_Iterations;Iterations;1Thread;2Threads;4Threads;8Threads
+1000000;3;10;10000;0;394.013;249.943;221.085;243.72
